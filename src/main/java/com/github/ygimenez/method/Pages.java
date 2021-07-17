@@ -130,52 +130,44 @@ public class Pages {
 	 */
 	public static void paginate(@Nonnull Message msg, @Nonnull List<Page> pages) throws ErrorResponseException, InsufficientPermissionException {
 		if (!isActivated()) throw new InvalidStateException();
-		List<Page> pgs = Collections.unmodifiableList(pages);
+		List<Page> pageList = Collections.unmodifiableList(pages);
+		List<Emote> reactions = List.of(PREVIOUS, CANCEL, NEXT);
 		clearReactions(msg);
-
-		msg.addReaction(paginator.getEmotes().get(PREVIOUS)).submit();
-		msg.addReaction(paginator.getEmotes().get(CANCEL)).submit();
-		msg.addReaction(paginator.getEmotes().get(NEXT)).submit();
+		addReactions(msg, reactions);
 
 		handler.addEvent(msg, new ThrowingBiConsumer<>() {
-			private final int maxP = pgs.size() - 1;
-			private int p = 0;
-			private final Consumer<Void> success = s -> {
+			private final int lastPageIndex = pageList.size() - 1;
+			private int pageIndex = 0;
+			private final Consumer<Void> successConsumer = s -> {
 				handler.removeEvent(msg);
 				if (paginator.isDeleteOnCancel()) msg.delete().submit();
 			};
 
 			@Override
-			public void acceptThrows(@Nonnull User u, @Nonnull GenericMessageReactionEvent event) {
-				Message m = null;
+			public void acceptThrows(@Nonnull User user, @Nonnull GenericMessageReactionEvent event) {
+				Message message;
 				try {
-					m = event.retrieveMessage().submit().get();
+					message = event.retrieveMessage().submit().get();
 				} catch (InterruptedException | ExecutionException ignore) {
+					return;
 				}
-				if (u.isBot() || m == null || !event.getMessageId().equals(msg.getId()))
+
+				if (user.isBot() || !event.getMessageId().equals(msg.getId()))
 					return;
 
-				MessageReaction.ReactionEmote reaction = event.getReactionEmote();
-				if (checkEmote(reaction, PREVIOUS)) {
-					if (p > 0) {
-						p--;
-						Page pg = pgs.get(p);
-
-						updatePage(m, pg);
+				MessageReaction.ReactionEmote userReaction = event.getReactionEmote();
+				reactions.forEach(reaction -> {
+					if (checkEmote(userReaction, reaction)) {
+						if (reaction.equals(Emote.CANCEL)) {
+							reaction.doWork(message, successConsumer);
+						} else {
+							pageIndex = reaction.doWork(message, pageIndex, lastPageIndex, pageList);
+						}
 					}
-				} else if (checkEmote(reaction, NEXT)) {
-					if (p < maxP) {
-						p++;
-						Page pg = pgs.get(p);
-
-						updatePage(m, pg);
-					}
-				} else if (checkEmote(reaction, CANCEL)) {
-					clearReactions(m, success);
-				}
+				});
 
 				if (event.isFromGuild() && event instanceof MessageReactionAddEvent && paginator.isRemoveOnReact()) {
-					event.getReaction().removeReaction(u).submit();
+					event.getReaction().removeReaction(user).submit();
 				}
 			}
 		});
@@ -4166,13 +4158,21 @@ public class Pages {
 	}
 
 	/**
+	 * @param msg       The {@link Message} sent which will be paginated.
+	 * @param reactions A {@link List} of {@link Emote} which will be added as reactions to the above {@code msg}.
+	 */
+	private static void addReactions(Message msg, List<Emote> reactions) {
+		reactions.forEach(reaction -> msg.addReaction(paginator.getEmotes().get(reaction)).submit());
+	}
+
+	/**
 	 * Method used to update the current page.
 	 * <strong>Must not be called outside of {@link Pages}</strong>.
 	 *
 	 * @param msg The current {@link Message} object.
 	 * @param p   The current {@link Page}.
 	 */
-	private static void updatePage(@Nonnull Message msg, Page p) {
+	public static void updatePage(@Nonnull Message msg, Page p) {
 		if (p == null) throw new NullPageException();
 
 		if (p.getContent() instanceof Message) {
